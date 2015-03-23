@@ -1,0 +1,118 @@
+Running Commentary
+
+So, having read the mandate several times, step 1 is to add the basic interfaces
+for Message and Gateway, though at first glance I suspect they'll either need
+extended or wrapped in some sort of container.
+
+Next up is an implementation of a gateway which does nothing other than call the
+"completed" function of the Message object.  This should be sufficient to test the
+basics of the scheduler.  Created SimpleGateway class.
+
+Looking at the complexity of the message prioritisation, it makes sense to separate
+the prioritiser from the Scheduler rather than to  provide different implementations
+of the scheduler depending on the preferred prioritisation.  Thus, added a new interface
+for the MessagePrioritiser.  Created an implementation called SimpleMessagePrioritiser
+which simply maintains a simple FIFO queue using an ArrayList.
+
+Now that theres a definition for a gateway and a prioritiser, created the first draft of
+the ResourceScheduler class with a constructor which is invoked with a collection of
+Gateways and a prioritiser.  The intention would be that the scheduler is injected via
+Spring but given how long it took me to install java, maven and eclipse on a macbook I'm
+not going to set up the whole Spring config.
+
+First test!  In SimpleTests.java created the first test which instantiates the scheduler,
+nothing more, nothing less...   
+
+We need to be able to add messages to the scheduler.  The interface doesnt provide for
+any sort of notification to the scheduler once a message is marked as completed, so I'm
+creating an implementation of a Message called ResourceSchedulerMessage which has a 
+property to store the resourceManager, so that the message can "call home" once its been
+completed and let the resourceManager know that a gateway is available and can be used to
+process other messages.  This is the "messageComplete" function in the resourceScheduler.
+
+Now we have a message, we need to be able to send it, so created the all-important
+"addMessage" function in the scheduler.  After a few false starts, realised the best
+thing to do is add the message to a queue via the prioritiser, and after that make a
+call to processNextMessage, which asks the prioritiser for the next message.  This same
+function can be called from the messageComplete function to check for any queued messages.
+
+Next test! testMessagesGetAddedToTheQueue does as the name suggests.  In order for the queue
+to actually be used though we can't use the SimpleGateway because due to it returning 
+immediately, there is no reason for the queue to ever fill up.  Instead, added a DoNothingGateway
+which does nothing at all and never calls the message "complete" function.  Realised that
+the scheduler needs to be able to tell if a gateway is available or not, so added 
+isAvailable to the gateway interface and added it to the two implementations. Now the scheduler
+can check if gateways are available and queue messages as required.
+
+Next test! testMessagesGetAddedToTheQueueWithMultipleGateways  Make sure that the queueing
+works ok with multiple gateways in operation.  Added functions to the scheduler to return
+the number of gateways available and the number of messages sitting in the queue.
+
+Next test! testMessagesGetRemovedFromTheQueue  We've checked they get added, best check they get
+removed again as well.  All seems good.
+
+Next test! testAddingListOfMessages   I want to be able to add a whole lot of messages at once
+to ensure that they all get queued up and eventually processed. Neither the DoNothing or the Simple 
+gateway is any use to us here, what we really need is a gateway that has some sort of delay
+before it returns.  Created a new "SleepyGateway", so called because it launches a new thread
+(SleepyGatewayThread) which sleeps for a configurable amount of time before calling the 
+message.completed function.  So the test adds 100 messages to the scheduler, but in order
+to check they all get processed I needed to add a list of completed messages to the scheduler,
+so I can check at the end that all 100 got processed.  The scheduler is instantiated with 3
+sleepy gateways with different durations, and the test waits for 2 seconds to give the scheduler
+time to complete before checking all 100 messages were completed.
+
+So the basics are working, we can queue up and process messages happily.  Next we need to cope
+with the requirement of the messages belonging to groups.  Added a "groupId" to the 
+ResourceSchedulerMessage object.  Created a new GroupMessagePrioritiser which implements the
+prioritiser interface.  This was actually fairly straightforward.  All that was needed was
+a LinkedHashMap (linked to maintain insertion order) which used groupId as a key and contained
+an ArrayList of messages specific to that group.  Quite straightforward and fitted well with
+the current interface.
+
+Next test! testMessagesGetAddedAccordingToGroup   Idea is to create a scheduler with a single
+sleepyGateway and add a few messages to it, and ensure that at the end the list of completed
+messages in the scheduler is in the order we expect.  Worked first time, whatever next?
+
+Next test!  testMessagesGetAddedAccordingToGroupWithMultipleGateways   As above, but with 
+multiple gateways in operation.  This is easy enough but we just take into account that the
+first n messages (where n is the number of gateways) will get processed immediately.  Sadly,
+it didnt work.  The messages were completed in the expected order perhaps 3 times out of 4, 
+which was concerning.  Added a whole lot of debugging to find out where things were going
+wrong and the messages were definitely getting sent to the gateways in the right order. Problem
+was that because both gateways were basically starting simultaneously, there was no telling
+in which order the thread manager would create the threads, or how "accurately" the Thread.sleep()
+function was going to work.  So with two SleepyGateways running with 10ms delays, I eventually
+added a 5ms delay between adding the first and second messages, such that the two gateways
+were running 'staggered'.  This resulted is far more predictable behaviour, thankfully.
+
+Looking at the "Extra Credit" features, I would argue that I have already met the requirements
+for the Alternative Message Prioritisation as I've implemented it using an interface and
+provided a couple of alternatives already proving that the infrastructure is there.
+
+To support cancellation and termination, I'm adding a new DeluxeMessagePrioritiser.  I had to
+add 'cancel' and 'terminate' to the prioritiser interface and provide stubs in the existing
+implmentations.  Deluxe is very similar to the GroupMessagePrioritiser, but with a couple of
+additional HashSet's which contain list of all groupIds which are either cancelled or terminated.
+'Cancel' operation is quite straightforward as it just removes all existing matching messages
+from the queue and wont add any news ones.  The 'terminate" required some more structural changes
+as it requires some exception handling being added to the resourceScheduler, and a new Exception
+type.  These two functions are both tested in the DeluxeTest.java test case.
+
+
+Summary
+
+There are 9 junit tests which hopefully demonstrate the scheduler doing everything the scheduler
+needs to do.  Is it "production quality" code?  Well, it would certainly run but there's nothing
+by way of error checking and its very far from having been coded defensively.  I think the 
+requirements are deceptive and I'm quite sure that no two solutions are the same, but I'm happy
+to defend my choices, namely: 
+- divide and conquer
+- if in doubt add more classes
+- make everything configurable and as generic as possible.
+
+
+
+
+
+
